@@ -51,16 +51,22 @@ class chess_ai:
         for i_episode in range(num_episodes):
             # Initialize the environment and state
             self.board.reset()
-            # generate random board
-            # random number between 0 and 30
-            number_of_moves = random.randint(0,60)
-            for i in range(number_of_moves):
-                moves = list(self.board.legal_moves)
-                new_moves = []
-                for move in moves:
-                    new_moves.append(move.uci())
-                moves = new_moves
-                self.board.push_uci(random.choice(moves))
+
+            setup = False
+            number_of_moves = random.randint(int(sys.argv[4]),int(sys.argv[5]))
+            while not setup:
+                setup = True
+                for i in range(number_of_moves):
+                    moves = list(self.board.legal_moves)
+                    new_moves = []
+                    for move in moves:
+                        new_moves.append(move.uci())
+                    moves = new_moves
+                    if self.board.is_game_over():
+                        setup = False
+                        self.board.reset()
+                        break
+                    self.board.push_uci(random.choice(moves))
 
             state = self.board_to_tensor(self.board)
             for t in range(int(sys.argv[3])):
@@ -95,13 +101,26 @@ class chess_ai:
         stockfish.set_depth(5)
         stockfish.set_fen_position(board.fen())
         score = stockfish.get_evaluation()
-        if score['type'] == 'mate':
-            if score['value'] > 0:
-                return torch.tensor([100], device=device)
+        # positive score means white is winning
+        # negative score means black is winning
+        # always return a positive score for the preivous player
+        player = board.turn
+        if player == chess.BLACK:
+            if score['type'] == 'mate':
+                if score['value'] > 0:
+                    return torch.tensor([-1000], device=device)
+                else:
+                    return torch.tensor([1000], device=device)
             else:
-                return torch.tensor([-100], device=device)
+                return torch.tensor([-score['value']], device=device)
         else:
-            return torch.tensor([score['value']/100], device=device)
+            if score['type'] == 'mate':
+                if score['value'] > 0:
+                    return torch.tensor([1000], device=device)
+                else:
+                    return torch.tensor([-1000], device=device)
+            else:
+                return torch.tensor([score['value']], device=device)
        
         
     def optimize_model(self, memory, optimizer):
@@ -128,7 +147,17 @@ class chess_ai:
         for param in self.policy_net.parameters():
             param.grad.data.clamp_(-1, 1)
         optimizer.step()
-
+    def target_move(self):
+        moves = list(self.board.legal_moves)
+        new_moves = []
+        for move in moves:
+            new_moves.append(move.uci())
+        moves = new_moves
+        state = self.board_to_tensor(self.board)
+        with torch.no_grad():
+            # return best move and score
+            print(self.target_net(state))
+            return moves[self.target_net(state).max(1)[1].view(1, 1)]
     
   
     def move_to_tensor(self,move):
@@ -146,54 +175,24 @@ class chess_ai:
     
     def board_to_tensor(self,board):
         # 8x8 matrix
-        # 0 = empty
-        # 1 = white pawn
-        # 2 = white knight
-        # 3 = white bishop
-        # 4 = white rook
-        # 5 = white queen
-        # 6 = white king
-        # -1 = black pawn  
-        # -2 = black knight
-        # -3 = black bishop
-        # -4 = black rook
-        # -5 = black queen
-        # -6 = black king
-        tensor = torch.zeros(8,8)
+        # if black we need to flip the board
+        # number represents the piece
+        # number is positive for current player
+        # number is negative for opponent
+        if board.turn == chess.BLACK:
+            board = board.mirror()
+
+        matrix = torch.zeros(8,8)
         for i in range(8):
             for j in range(8):
-                piece = board.piece_at(chess.square(i,j))
-                if piece == None:
-                    tensor[i][j] = 0
-                else:
-                    if piece.color == chess.WHITE:
-                        if piece.piece_type == chess.PAWN:
-                            tensor[i][j] = 1
-                        elif piece.piece_type == chess.KNIGHT:
-                            tensor[i][j] = 2
-                        elif piece.piece_type == chess.BISHOP:
-                            tensor[i][j] = 3
-                        elif piece.piece_type == chess.ROOK:
-                            tensor[i][j] = 4
-                        elif piece.piece_type == chess.QUEEN:
-                            tensor[i][j] = 5
-                        elif piece.piece_type == chess.KING:
-                            tensor[i][j] = 6
+                piece = board.piece_at(i*8+j)
+                if piece is not None:
+                    if piece.color == board.turn:
+                        matrix[i][j] = piece.piece_type
                     else:
-                        if piece.piece_type == chess.PAWN:
-                            tensor[i][j] = -1
-                        elif piece.piece_type == chess.KNIGHT:
-                            tensor[i][j] = -2
-                        elif piece.piece_type == chess.BISHOP:
-                            tensor[i][j] = -3
-                        elif piece.piece_type == chess.ROOK:
-                            tensor[i][j] = -4
-                        elif piece.piece_type == chess.QUEEN:
-                            tensor[i][j] = -5
-                        elif piece.piece_type == chess.KING:
-                            tensor[i][j] = -6
+                        matrix[i][j] = - piece.piece_type
 
-        return tensor.view(1,8*8)
+        return matrix.view(1,64)
 
         
         
@@ -202,8 +201,15 @@ myAi = chess_ai()
 # mode is argument passed to the program
 # train to train the model
 # play to play against the model
+
 mode = sys.argv[1]
 if mode == "train":
+    # save all arguments to a file
+    with open('args.txt', 'w') as f:
+        for arg in sys.argv:
+            f.write(arg)
+            f.write(' ')
+    
     # load the model if it exists
     try:
         myAi.policy_net.load_state_dict(torch.load('policy_net.pth'))
@@ -225,14 +231,17 @@ else:
     while not myAi.board.is_game_over():
         # make a move
         try:
+            
+            
+            # make the network make a move
+            myAi.board.push_uci(myAi.target_move())
+            print(myAi.board)
             print("your move")
             move = input()
             if move == "quit":
                 break
             myAi.board.push_uci(move)
-            # make the network make a move
-            myAi.board.push_uci(myAi.select_action())
-            print(myAi.board)
+            
         except:
             print("invalid move")
             continue
@@ -242,7 +251,8 @@ else:
 
 # check what the network would do as a first move and then make that move
 myAi.board.reset()
-myAi.board.push_uci(myAi.select_action())
+myAi.board.push_uci(myAi.target_move())
+
 print(myAi.board)
 
 
