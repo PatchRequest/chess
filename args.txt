@@ -1,1 +1,0 @@
-main.py train 1000 3 0 5 
