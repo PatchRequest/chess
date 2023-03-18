@@ -88,6 +88,14 @@ class chess_ai:
                 if self.board.is_game_over():
                     episode_durations.append(t + 1)
                     break
+                # lets stockfish play
+                stockfish = Stockfish()
+                stockfish.set_depth(5)
+                stockfish.set_fen_position(self.board.fen())
+                move = stockfish.get_best_move()
+                self.board.push_uci(move)
+                if self.board.is_game_over():
+                    break
 
             # Update the target network, copying all weights and biases in DQN
             print("Episode: ", i_episode)
